@@ -1,14 +1,18 @@
 """
 LoRA fine-tuning for MiniMind-O on traffic sign classification.
-Usage: python scripts/training/train_lora.py --dataset data/labeled/dataset.json
 
-Requires MiniMind-O weights placed in models/minimind-o/
-See: https://github.com/jingyaogong/minimind-o
+Model: jingyaogong/minimind-3o
+Weights: https://huggingface.co/jingyaogong/minimind-3o
+
+Usage:
+    python scripts/training/train_lora.py --dataset data/labeled/dataset.json
+
+MPS note: training on CPU is slow but works. If you have access to a CUDA GPU,
+set CUDA_VISIBLE_DEVICES and it will be used automatically.
 """
 
 import argparse
 import json
-import os
 import torch
 import wandb
 from pathlib import Path
@@ -19,6 +23,14 @@ from PIL import Image
 import base64
 import io
 from tqdm import tqdm
+
+
+def _best_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 class TrafficDataset(Dataset):
@@ -33,7 +45,7 @@ class TrafficDataset(Dataset):
 
     def __getitem__(self, idx):
         rec = self.records[idx]
-        text = f"<image>\nUser: {rec['prompt']}\nAssistant: {rec['answer']}"
+        text = f"<image>\nUser: What traffic signal or sign is visible?\nAssistant: {rec['answer']}"
         tokens = self.tokenizer(
             text,
             truncation=True,
@@ -42,7 +54,7 @@ class TrafficDataset(Dataset):
             return_tensors="pt",
         )
         img_bytes = base64.b64decode(rec["image"])
-        image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        image = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((256, 256))
         return {
             "input_ids": tokens["input_ids"].squeeze(),
             "attention_mask": tokens["attention_mask"].squeeze(),
@@ -53,27 +65,25 @@ class TrafficDataset(Dataset):
 def train(args):
     wandb.init(project="micropilot", config=vars(args))
 
-    device = (
-        torch.device("mps") if torch.backends.mps.is_available()
-        else torch.device("cuda") if torch.cuda.is_available()
-        else torch.device("cpu")
-    )
+    device = _best_device()
     print(f"Training on: {device}")
+    if device.type == "cpu":
+        print("[WARNING] Training on CPU will be slow. Consider a machine with CUDA or MPS.")
 
-    model_path = Path(args.model_path)
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"MiniMind-O weights not found at {model_path}.\n"
-            "Clone from: https://github.com/jingyaogong/minimind-o and place weights in models/minimind-o/"
-        )
-
-    print("Loading MiniMind-O...")
-    tokenizer = AutoTokenizer.from_pretrained(str(model_path), trust_remote_code=True)
+    model_id = args.model_id
+    print(f"Loading {model_id}...")
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
-        str(model_path),
+        model_id,
         trust_remote_code=True,
         torch_dtype=torch.float32,
-    ).to(device)
+    )
+    try:
+        model = model.to(device)
+    except Exception as e:
+        print(f"[WARNING] {device} failed ({e}), falling back to CPU.")
+        device = torch.device("cpu")
+        model = model.to(device)
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -130,7 +140,8 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="data/labeled/dataset.json")
-    parser.add_argument("--model_path", default="models/minimind-o")
+    parser.add_argument("--model_id", default="jingyaogong/minimind-3o",
+                        help="HuggingFace model ID or local path")
     parser.add_argument("--output", default="models/minimind-o-lora")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=4)
