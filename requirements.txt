@@ -1,0 +1,23 @@
+# Core ML
+torch>=2.3.0
+torchvision>=0.18.0
+transformers>=4.41.0
+peft>=0.11.0
+accelerate>=0.30.0
+datasets>=2.19.0
+
+# Object detection pre-filter
+ultralytics>=8.2.0
+
+# Vision & video
+opencv-python>=4.9.0
+Pillow>=10.3.0
+
+# Training utilities
+wandb>=0.17.0
+tqdm>=4.66.0
+numpy>=1.26.0
+
+# Notebook
+jupyter>=1.0.0
+ipykernel>=6.29.0

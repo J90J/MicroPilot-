@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Model weights (too large for git — use Git LFS or shared drive)
+models/*.bin
+models/*.safetensors
+models/*.pt
+models/*.pth
+models/*.gguf
+
+# Data (raw footage and labeled frames can be large)
+data/raw/
+data/frames/
+data/labeled/
+
+# Experiment tracking
+wandb/
+runs/
+*.log
+
+# Environment
+.env
+.env.local
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# uv / pip
+.python-version
+uv.lock
