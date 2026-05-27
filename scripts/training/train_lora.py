@@ -10,6 +10,7 @@ Usage:
 import argparse
 import csv
 import torch
+import torch.nn.functional as F
 import wandb
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
@@ -27,8 +28,13 @@ def _best_device() -> torch.device:
     return torch.device("cpu")
 
 
+def _model_dtype(device: torch.device) -> torch.dtype:
+    # bfloat16 matmul is unreliable on MPS; float32 is safe everywhere
+    return torch.bfloat16 if device.type == "cuda" else torch.float32
+
+
 class TrafficDataset(Dataset):
-    def __init__(self, labels_csv: str, frames_dir: str, tokenizer, vision_processor, max_length: int = 256):
+    def __init__(self, labels_csv: str, frames_dir: str, tokenizer, vision_processor, max_length: int = 256, train_limit: int = None):
         self.frames_dir = Path(frames_dir)
         self.tokenizer = tokenizer
         self.vision_processor = vision_processor
@@ -38,8 +44,15 @@ class TrafficDataset(Dataset):
             all_rows = list(csv.DictReader(f))
 
         # Only keep rows where the image file exists
-        self.records = [r for r in all_rows if (self.frames_dir / r["filename"]).exists()]
-        print(f"Dataset: {len(self.records)}/{len(all_rows)} samples found on disk")
+        all_valid = [r for r in all_rows if (self.frames_dir / r["filename"]).exists()]
+
+        # Optional subsample for faster training runs
+        if train_limit and train_limit < len(all_valid):
+            import random; random.seed(42)
+            all_valid = random.sample(all_valid, train_limit)
+
+        self.records = all_valid
+        print(f"Dataset: {len(self.records)} samples (from {len(all_rows)} total)")
 
     def __len__(self):
         return len(self.records)
@@ -71,7 +84,10 @@ class TrafficDataset(Dataset):
 
 
 def train(args):
-    wandb.init(project="micropilot", config=vars(args))
+    if args.no_wandb:
+        wandb.init(mode="disabled")
+    else:
+        wandb.init(project="micropilot", config=vars(args))
 
     device = _best_device()
     print(f"Training on: {device}")
@@ -83,11 +99,13 @@ def train(args):
     tok = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
     vision_processor = SiglipImageProcessor.from_pretrained(args.siglip_path)
 
-    dataset = TrafficDataset(args.labels_csv, args.frames_dir, tok, vision_processor)
+    dataset = TrafficDataset(args.labels_csv, args.frames_dir, tok, vision_processor, train_limit=args.train_limit)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
+    dtype = _model_dtype(device)
+    print(f"Model dtype: {dtype}")
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_id, trust_remote_code=True, torch_dtype=torch.bfloat16
+        args.model_id, trust_remote_code=True, torch_dtype=dtype
     )
     try:
         model = model.to(device)
@@ -96,7 +114,7 @@ def train(args):
         device = torch.device("cpu")
         model = model.to(device)
 
-    vision_encoder = SiglipVisionModel.from_pretrained(args.siglip_path).eval().to(device)
+    vision_encoder = SiglipVisionModel.from_pretrained(args.siglip_path).eval().to(device=device, dtype=dtype)
     object.__setattr__(model, "vision_encoder", vision_encoder)
     object.__setattr__(model, "vision_processor", vision_processor)
 
@@ -123,10 +141,15 @@ def train(args):
         total_loss = 0.0
         for batch in tqdm(loader, desc=f"Epoch {epoch + 1}/{args.epochs}"):
             input_ids = batch["input_ids"].to(device)
-            pixel_values = batch["pixel_values"].to(device)
+            pixel_values = batch["pixel_values"].to(device=device, dtype=dtype)
 
-            outputs = model(input_ids=input_ids, labels=input_ids, pixel_values=pixel_values)
-            loss = outputs.loss
+            # Custom model has no labels arg — compute cross-entropy from logits manually
+            outputs = model(input_ids=input_ids, pixel_values=pixel_values)
+            logits = outputs.logits  # (B, T, vocab)
+            shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+            shift_labels = input_ids[:, 1:].contiguous().view(-1)
+            pad_id = tok.pad_token_id if tok.pad_token_id is not None else 0
+            loss = F.cross_entropy(shift_logits, shift_labels, ignore_index=pad_id)
 
             optimizer.zero_grad()
             loss.backward()
@@ -161,5 +184,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--lora_r", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=16)
+    parser.add_argument("--train_limit", type=int, default=None, help="Subsample N training examples (faster runs)")
+    parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging")
     args = parser.parse_args()
     train(args)

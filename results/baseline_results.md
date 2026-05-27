@@ -2,7 +2,7 @@
 
 ## Zero-Shot Baseline (MiniMind-O, no fine-tuning)
 
-**Dataset:** 500 samples — GTSRB speed limit signs + S2TLD traffic lights  
+**Dataset:** 500 samples — S2TLD traffic lights (US-style) + manually labeled speed limit frames  
 **Model:** `jingyaogong/minimind-3o` (0.1B params, no LoRA)  
 **Date:** 2026-05-27
 

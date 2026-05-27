@@ -20,7 +20,7 @@ models/*.pth
 models/*.gguf
 
 # Data (raw footage and large files — labels.csv IS committed)
-data/raw/
+data/raw/          # demo videos only — NOT used for training/eval
 data/frames/
 data/labeled/dataset.json
 data/gtsrb/

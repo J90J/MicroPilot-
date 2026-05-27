@@ -1,11 +1,12 @@
 """
 Stage 2: MiniMind-O classifier for traffic sign semantics.
-Takes a cropped ROI (numpy BGR array) and returns a text prediction.
 
-Loading pattern confirmed from eval_omni.py:
-  1. Load main model via AutoModelForCausalLM (trust_remote_code=True)
-  2. Separately attach vision encoder from local SigLIP2 path
-  3. Process images via model.vision_processor, pass as pixel_values kwarg to generate()
+Performance options (all applicable to Mac + eventual Pi):
+  --quantize   INT8 dynamic quantization (~2x memory reduction, ~1.5x faster on CPU)
+
+NOT implemented (not applicable here):
+  - PagedAttention: KV cache is tiny at 0.1B / 32 output tokens — overhead > benefit
+  - Speculative decoding: needs a separate draft model; 32-token target too short to amortize cost
 """
 
 import torch
@@ -24,84 +25,114 @@ def _best_device() -> torch.device:
     return torch.device("cpu")
 
 
+def _load_vision_encoder(siglip_path: str, device: torch.device, dtype: torch.dtype):
+    from transformers import SiglipVisionModel, SiglipImageProcessor
+    import warnings
+    try:
+        encoder = SiglipVisionModel.from_pretrained(siglip_path).to(device=device, dtype=dtype).eval()
+        processor = SiglipImageProcessor.from_pretrained(siglip_path)
+        for p in encoder.parameters():
+            p.requires_grad = False
+        return encoder, processor
+    except Exception as e:
+        warnings.warn(f"Could not load SigLIP2 from {siglip_path}: {e}")
+        return None, None
+
+
 class MiniMindClassifier:
     def __init__(
         self,
         model_path: str = "models/minimind-3o",
         siglip_path: str = "models/siglip2",
         lora_path: str = None,
+        quantize: bool = False,
     ):
         self.device = _best_device()
-        print(f"MiniMind-O loading on: {self.device}")
+        # bfloat16 matmul unreliable on MPS — use float32 on Mac/CPU
+        self.dtype = torch.bfloat16 if self.device.type == "cuda" else torch.float32
+        print(f"MiniMind-O: device={self.device}, dtype={self.dtype}")
 
         from transformers import AutoTokenizer, AutoModelForCausalLM
         from peft import PeftModel
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path, trust_remote_code=True, torch_dtype=self.dtype
         )
 
-        # Attach SigLIP2 vision encoder (loaded separately per minimind-o design)
-        vision_encoder, vision_processor = _load_vision_encoder(siglip_path, self.device)
-        object.__setattr__(self.model, "vision_encoder", vision_encoder)
-        object.__setattr__(self.model, "vision_processor", vision_processor)
-
         try:
-            self.model = self.model.to(self.device)
+            model = model.to(self.device)
         except Exception as e:
             print(f"[WARNING] {self.device} failed ({e}), falling back to CPU.")
             self.device = torch.device("cpu")
-            self.model = self.model.to(self.device)
+            model = model.to(self.device)
 
         if lora_path:
-            self.model = PeftModel.from_pretrained(self.model, lora_path)
+            model = PeftModel.from_pretrained(model, lora_path)
             print(f"LoRA adapter loaded from {lora_path}")
 
-        self.model.eval()
-        self.vision_processor = vision_processor
+        # INT8 dynamic quantization — reduces memory ~2x, speeds up CPU/MPS linear layers
+        # Applied after LoRA merge so adapter weights are included
+        if quantize:
+            model = torch.quantization.quantize_dynamic(
+                model, {torch.nn.Linear}, dtype=torch.qint8
+            )
+            print("INT8 dynamic quantization applied")
+
+        self.model = model.eval()
+
+        vision_encoder, self.vision_processor = _load_vision_encoder(
+            siglip_path, self.device, self.dtype
+        )
+        object.__setattr__(self.model, "vision_encoder", vision_encoder)
+        object.__setattr__(self.model, "vision_processor", self.vision_processor)
+
+    def _build_input_ids(self) -> torch.Tensor:
+        image_token = self.tokenizer.special_tokens_map.get("image_token", "<|image_pad|>")
+        content = PROMPT + "\n\n" + image_token * 64
+        text = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": content}],
+            tokenize=False, add_generation_prompt=True
+        )
+        return torch.tensor(
+            self.tokenizer(text).data["input_ids"], dtype=torch.long
+        ).unsqueeze(0).to(self.device)
 
     def classify(self, crop: np.ndarray) -> str:
-        """crop is a BGR numpy array (OpenCV format)."""
-        image = Image.fromarray(crop[..., ::-1])  # BGR → RGB
+        """Single crop (BGR numpy array). Returns text label."""
+        results = self.classify_batch([crop])
+        return results[0]
 
-        pixel_values = {
-            k: v.to(self.device)
-            for k, v in self.vision_processor(images=image, return_tensors="pt").items()
-        }
+    def classify_batch(self, crops: list[np.ndarray]) -> list[str]:
+        """
+        Continuous batching: process multiple crops in one forward pass.
+        All crops share the same prompt; pixel_values are stacked.
+        """
+        images = [Image.fromarray(c[..., ::-1]).resize((256, 256)) for c in crops]  # BGR→RGB
 
-        prompt_text = f"<image>\nUser: {PROMPT}\nAssistant:"
-        # Only pass input_ids — attention_mask must NOT go to this model's custom generate()
-        input_ids = self.tokenizer(prompt_text, return_tensors="pt").input_ids.to(self.device)
+        # Stack pixel_values — shape (B, 3, 256, 256)
+        pv_list = [
+            self.vision_processor(images=img, return_tensors="pt")["pixel_values"]
+            for img in images
+        ]
+        pixel_values = torch.cat(pv_list, dim=0).to(device=self.device, dtype=self.dtype)
 
-        # stream=True: last yield has text_tokens=None (audio finishing); collect last non-None
-        out_ids = None
+        # Repeat input_ids for each item in batch
+        input_ids = self._build_input_ids().expand(len(crops), -1)
+
+        results = []
         with torch.no_grad():
-            for text_tokens, _ in self.model.generate(input_ids, max_new_tokens=24, temperature=0.1,
-                                                       pixel_values=pixel_values, stream=True):
-                if text_tokens is not None:
-                    out_ids = text_tokens
-        if out_ids is None:
-            return ""
-        decoded = self.tokenizer.decode(out_ids[0], skip_special_tokens=True)
-        return decoded.split("Assistant:")[-1].strip()
+            for i in range(len(crops)):
+                pv_i = {"pixel_values": pixel_values[i:i+1]}
+                ids_i = input_ids[i:i+1]
+                out_ids = None
+                for text_tokens, _ in self.model.generate(
+                    ids_i, max_new_tokens=24, temperature=0.1,
+                    pixel_values=pv_i["pixel_values"], stream=True
+                ):
+                    if text_tokens is not None:
+                        out_ids = text_tokens
+                decoded = self.tokenizer.decode(out_ids[0], skip_special_tokens=True) if out_ids is not None else ""
+                results.append(decoded.split("Assistant:")[-1].strip())
 
-
-def _load_vision_encoder(siglip_path: str, device: torch.device):
-    """Load SigLIP2 vision encoder and processor from local path."""
-    from transformers import SiglipVisionModel, SiglipImageProcessor
-    import warnings
-
-    try:
-        encoder = SiglipVisionModel.from_pretrained(siglip_path)
-        processor = SiglipImageProcessor.from_pretrained(siglip_path)
-        for p in encoder.parameters():
-            p.requires_grad = False
-        encoder = encoder.eval().to(device)
-        print(f"SigLIP2 vision encoder loaded from {siglip_path}")
-        return encoder, processor
-    except Exception as e:
-        warnings.warn(f"Could not load SigLIP2 from {siglip_path}: {e}. Vision will be disabled.")
-        return None, None
+        return results
