@@ -91,9 +91,17 @@ def evaluate(args):
         # Only pass input_ids — attention_mask must NOT go to this model's custom generate()
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
+        # stream=True: generator yields (text_tokens, audio_frame); last yield has text_tokens=None
+        # collect last non-None text output
+        out_ids = None
         with torch.no_grad():
-            out = model.generate(input_ids, max_new_tokens=32, temperature=0.1, pixel_values=pixel_values)
-        decoded = tokenizer.decode(out[0], skip_special_tokens=True)
+            for text_tokens, _ in model.generate(input_ids, max_new_tokens=32, temperature=0.1,
+                                                  pixel_values=pixel_values, stream=True):
+                if text_tokens is not None:
+                    out_ids = text_tokens
+        if out_ids is None:
+            continue
+        decoded = tokenizer.decode(out_ids[0], skip_special_tokens=True)
         predicted = decode_prediction(decoded.split("Assistant:")[-1])
 
         gt = rec["answer"].replace("speed limit ", "speed_limit_").replace(" ", "_")
