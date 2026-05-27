@@ -49,7 +49,11 @@ class TrafficDataset(Dataset):
         label = rec["label"].strip()
         image = Image.open(self.frames_dir / rec["filename"]).convert("RGB").resize((256, 256))
 
-        text = f"<image>\nUser: What traffic signal or sign is visible?\nAssistant: {label}"
+        image_token = self.tokenizer.special_tokens_map.get("image_token", "<|image_pad|>")
+        prompt_content = f"What traffic signal or sign is visible?\n\n{image_token * 64}"
+        messages = [{"role": "user", "content": prompt_content},
+                    {"role": "assistant", "content": label}]
+        text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
         tokens = self.tokenizer(
             text,
             truncation=True,

@@ -98,8 +98,11 @@ def evaluate(args):
             for k, v in vision_processor(images=image, return_tensors="pt").items()
         }
 
-        prompt = "<image>\nUser: What traffic signal or sign is visible?\nAssistant:"
-        input_ids = tok(prompt, return_tensors="pt").input_ids.to(device)
+        image_tokens = tok.special_tokens_map.get("image_token", "<|image_pad|>")
+        prompt_content = "What traffic signal or sign is visible?\n\n" + image_tokens * 64
+        messages = [{"role": "user", "content": prompt_content}]
+        inputs_text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        input_ids = torch.tensor(tok(inputs_text).data["input_ids"], dtype=torch.long).unsqueeze(0).to(device)
 
         out_ids = None
         with torch.no_grad():

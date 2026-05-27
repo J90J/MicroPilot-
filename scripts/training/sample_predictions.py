@@ -53,10 +53,12 @@ def main(limit: int = 10):
 
         image = Image.open(img_path).convert("RGB").resize((256, 256))
         pv = {k: v.to(device) for k, v in proc(images=image, return_tensors="pt").items()}
-        input_ids = tok(
-            "<image>\nUser: What traffic signal or sign is visible?\nAssistant:",
-            return_tensors="pt"
-        ).input_ids.to(device)
+        image_token = tok.special_tokens_map.get("image_token", "<|image_pad|>")
+        prompt_content = "What traffic signal or sign is visible?\n\n" + image_token * 64
+        inputs_text = tok.apply_chat_template(
+            [{"role": "user", "content": prompt_content}], tokenize=False, add_generation_prompt=True
+        )
+        input_ids = torch.tensor(tok(inputs_text).data["input_ids"], dtype=torch.long).unsqueeze(0).to(device)
 
         out_ids = None
         with torch.no_grad():
