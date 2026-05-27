@@ -108,7 +108,7 @@ def evaluate(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="data/labeled/dataset.json")
-    parser.add_argument("--model_id", default="jingyaogong/minimind-3o")
+    parser.add_argument("--model_id", default="models/minimind-3o")
     parser.add_argument("--lora_path", default=None)
     args = parser.parse_args()
     evaluate(args)
