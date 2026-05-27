@@ -72,11 +72,13 @@ def train(args):
 
     model_id = args.model_id
     print(f"Loading {model_id}...")
+    from transformers import SiglipVisionModel, SiglipImageProcessor
+
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         trust_remote_code=True,
-        torch_dtype=torch.float32,
+        torch_dtype=torch.bfloat16,
     )
     try:
         model = model.to(device)
@@ -84,6 +86,12 @@ def train(args):
         print(f"[WARNING] {device} failed ({e}), falling back to CPU.")
         device = torch.device("cpu")
         model = model.to(device)
+
+    # Attach SigLIP2 vision encoder (frozen — we only LoRA the language backbone)
+    vision_encoder = SiglipVisionModel.from_pretrained(args.siglip_path).eval().to(device)
+    vision_processor = SiglipImageProcessor.from_pretrained(args.siglip_path)
+    object.__setattr__(model, "vision_encoder", vision_encoder)
+    object.__setattr__(model, "vision_processor", vision_processor)
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -142,6 +150,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default="data/labeled/dataset.json")
     parser.add_argument("--model_id", default="models/minimind-3o",
                         help="HuggingFace model ID or local path")
+    parser.add_argument("--siglip_path", default="models/siglip2")
     parser.add_argument("--output", default="models/minimind-o-lora")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=4)

@@ -51,15 +51,23 @@ def evaluate(args):
     device = _best_device()
     print(f"Evaluating on: {device}")
 
+    from transformers import SiglipVisionModel, SiglipImageProcessor
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_id, trust_remote_code=True, torch_dtype=torch.float32
+        args.model_id, trust_remote_code=True, torch_dtype=torch.bfloat16
     )
     try:
         model = model.to(device)
     except Exception:
         device = torch.device("cpu")
         model = model.to(device)
+
+    # Attach SigLIP2 vision encoder
+    vision_encoder = SiglipVisionModel.from_pretrained(args.siglip_path).eval().to(device)
+    vision_processor = SiglipImageProcessor.from_pretrained(args.siglip_path)
+    object.__setattr__(model, "vision_encoder", vision_encoder)
+    object.__setattr__(model, "vision_processor", vision_processor)
 
     if args.lora_path:
         model = PeftModel.from_pretrained(model, args.lora_path)
@@ -77,11 +85,14 @@ def evaluate(args):
         img_bytes = base64.b64decode(rec["image"])
         image = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((256, 256))
 
+        pixel_values = {k: v.to(device) for k, v in vision_processor(images=image, return_tensors="pt").items()}
+
         prompt = "<image>\nUser: What traffic signal or sign is visible?\nAssistant:"
-        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        # Only pass input_ids — attention_mask must NOT go to this model's custom generate()
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
 
         with torch.no_grad():
-            out = model.generate(**inputs, max_new_tokens=32, do_sample=False, images=[image])
+            out = model.generate(input_ids, max_new_tokens=32, temperature=0.1, pixel_values=pixel_values)
         decoded = tokenizer.decode(out[0], skip_special_tokens=True)
         predicted = decode_prediction(decoded.split("Assistant:")[-1])
 
@@ -109,6 +120,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="data/labeled/dataset.json")
     parser.add_argument("--model_id", default="models/minimind-3o")
+    parser.add_argument("--siglip_path", default="models/siglip2")
     parser.add_argument("--lora_path", default=None)
     args = parser.parse_args()
     evaluate(args)

@@ -73,15 +73,11 @@ class MiniMindClassifier:
         }
 
         prompt_text = f"<image>\nUser: {PROMPT}\nAssistant:"
+        # Only pass input_ids — attention_mask must NOT go to this model's custom generate()
         input_ids = self.tokenizer(prompt_text, return_tensors="pt").input_ids.to(self.device)
 
         with torch.no_grad():
-            out = self.model.generate(
-                input_ids,
-                max_new_tokens=24,
-                temperature=0.1,
-                pixel_values=pixel_values,
-            )
+            out = self.model.generate(input_ids, max_new_tokens=24, temperature=0.1, pixel_values=pixel_values)
 
         decoded = self.tokenizer.decode(out[0], skip_special_tokens=True)
         return decoded.split("Assistant:")[-1].strip()
