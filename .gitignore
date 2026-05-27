@@ -19,10 +19,12 @@ models/*.pt
 models/*.pth
 models/*.gguf
 
-# Data (raw footage and labeled frames can be large)
+# Data (raw footage and large files — labels.csv IS committed)
 data/raw/
 data/frames/
-data/labeled/
+data/labeled/dataset.json
+data/gtsrb/
+data/s2tld/
 
 # Experiment tracking
 wandb/
