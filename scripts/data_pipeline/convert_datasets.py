@@ -36,16 +36,22 @@ S2TLD_CLASS_MAP = {
 }
 
 
-def convert_gtsrb(input_dir: Path, output_frames: Path, output_csv: Path):
+def convert_gtsrb(input_dir: Path, output_frames: Path):
     output_frames.mkdir(parents=True, exist_ok=True)
     rows = []
 
     for cls_id, label in GTSRB_SPEED_LIMIT_CLASSES.items():
-        cls_dir = input_dir / f"{cls_id:05d}"
-        if not cls_dir.exists():
-            # Try flat structure
-            cls_dir = input_dir / "train" / f"{cls_id:05d}"
-        if not cls_dir.exists():
+        # Try both zero-padded and plain integer folder names, Train and train
+        candidates = [
+            input_dir / f"{cls_id:05d}",
+            input_dir / str(cls_id),
+            input_dir / "Train" / f"{cls_id:05d}",
+            input_dir / "Train" / str(cls_id),
+            input_dir / "train" / f"{cls_id:05d}",
+            input_dir / "train" / str(cls_id),
+        ]
+        cls_dir = next((c for c in candidates if c.exists()), None)
+        if cls_dir is None:
             print(f"  Skipping class {cls_id} — directory not found")
             continue
 
@@ -59,7 +65,7 @@ def convert_gtsrb(input_dir: Path, output_frames: Path, output_csv: Path):
     return rows
 
 
-def convert_s2tld(input_dir: Path, output_frames: Path, output_csv: Path):
+def convert_s2tld(input_dir: Path, output_frames: Path):
     output_frames.mkdir(parents=True, exist_ok=True)
     rows = []
 
@@ -137,8 +143,8 @@ if __name__ == "__main__":
     csv_out = Path(args.csv_out)
 
     if args.source == "gtsrb":
-        rows = convert_gtsrb(Path(args.input), frames_out, csv_out)
+        rows = convert_gtsrb(Path(args.input), frames_out)
     else:
-        rows = convert_s2tld(Path(args.input), frames_out, csv_out)
+        rows = convert_s2tld(Path(args.input), frames_out)
 
     write_csv(rows, csv_out)

@@ -3,7 +3,7 @@ Download free traffic datasets for baseline training and evaluation.
 
 Downloads:
   - GTSRB  (320 MB) — German Traffic Sign Recognition, includes speed limit signs
-  - S2TLD  (~1.4 GB) — SJTU Small Traffic Light Dataset, US-style lights
+  - S2TLD  (~1.1 GB) — SJTU Small Traffic Light Dataset, US-style lights
 
 Usage:
     python scripts/data_pipeline/download_datasets.py --dataset gtsrb
@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import os
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -20,10 +19,8 @@ from tqdm import tqdm
 
 
 GTSRB_URL = "https://zenodo.org/records/13741936/files/data.zip?download=1"
-S2TLD_BASE = "https://huggingface.co/datasets/yangxue/S2TLD/resolve/main"
-S2TLD_FILES = [
-    "S2TLD_720x1280.zip",
-]
+S2TLD_REPO = "yangxue/S2TLD"
+S2TLD_FILE = "S2TLD（720x1280）.zip"
 
 
 class DownloadProgress(tqdm):
@@ -48,6 +45,9 @@ def extract_zip(zip_path: Path, out_dir: Path):
 
 
 def download_gtsrb(base_dir: Path = Path("data/gtsrb")):
+    if (base_dir / "data").exists() or list(base_dir.glob("**/00000")):
+        print("GTSRB already downloaded, skipping.")
+        return
     zip_path = base_dir / "gtsrb.zip"
     print("\n=== Downloading GTSRB (~320 MB) ===")
     download_file(GTSRB_URL, zip_path)
@@ -56,12 +56,18 @@ def download_gtsrb(base_dir: Path = Path("data/gtsrb")):
 
 
 def download_s2tld(base_dir: Path = Path("data/s2tld")):
+    if (base_dir / "Annotations").exists() or (base_dir / "JPEGImages").exists():
+        print("S2TLD already downloaded, skipping.")
+        return
     print("\n=== Downloading S2TLD (~1.1 GB) ===")
-    for fname in S2TLD_FILES:
-        url = f"{S2TLD_BASE}/{fname}"
-        zip_path = base_dir / fname
-        download_file(url, zip_path)
-        extract_zip(zip_path, base_dir)
+    from huggingface_hub import hf_hub_download
+    zip_path = hf_hub_download(
+        repo_id=S2TLD_REPO,
+        filename=S2TLD_FILE,
+        repo_type="dataset",
+        local_dir=str(base_dir),
+    )
+    extract_zip(Path(zip_path), base_dir)
     print("S2TLD ready.")
 
 
