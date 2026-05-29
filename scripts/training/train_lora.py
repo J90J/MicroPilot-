@@ -20,6 +20,17 @@ from PIL import Image
 from tqdm import tqdm
 
 
+# Up-weight classes with poor recall in Run 1 (45/50/55 confused with 25/35).
+# Medium-rare classes (30/40/60/65/70/75) get a modest boost too.
+CLASS_WEIGHTS: dict[str, float] = {
+    # Run 2 showed 4× was too aggressive (overcorrected toward 45).
+    # Run 3: gentle 2× nudge on the three weak classes only.
+    "speed_limit_45": 2.0,
+    "speed_limit_50": 2.0,
+    "speed_limit_55": 2.0,
+}
+
+
 def _best_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -43,16 +54,21 @@ class TrafficDataset(Dataset):
         with open(labels_csv) as f:
             all_rows = list(csv.DictReader(f))
 
-        # Only keep rows where the image file exists
         all_valid = [r for r in all_rows if (self.frames_dir / r["filename"]).exists()]
 
-        # Optional subsample for faster training runs
-        if train_limit and train_limit < len(all_valid):
-            import random; random.seed(42)
-            all_valid = random.sample(all_valid, train_limit)
+        # Deterministic 80/20 split — same seed as evaluate.py so eval set is never seen in training
+        import random as _random
+        rng = _random.Random(42)
+        rng.shuffle(all_valid)
+        n_train = int(len(all_valid) * 0.8)
+        train_rows = all_valid[:n_train]
 
-        self.records = all_valid
-        print(f"Dataset: {len(self.records)} samples (from {len(all_rows)} total)")
+        if train_limit and train_limit < len(train_rows):
+            rng2 = _random.Random(42)
+            train_rows = rng2.sample(train_rows, train_limit)
+
+        self.records = train_rows
+        print(f"Dataset: {len(self.records)} training samples (80% split from {len(all_valid)} valid, {len(all_rows)} total)")
 
     def __len__(self):
         return len(self.records)
@@ -122,8 +138,8 @@ def train(args):
         task_type=TaskType.CAUSAL_LM,
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
-        lora_dropout=0.05,
-        target_modules=["q_proj", "v_proj"],
+        lora_dropout=args.lora_dropout,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         bias="none",
     )
     model = get_peft_model(model, lora_config)
@@ -146,10 +162,22 @@ def train(args):
             # Custom model has no labels arg — compute cross-entropy from logits manually
             outputs = model(input_ids=input_ids, pixel_values=pixel_values)
             logits = outputs.logits  # (B, T, vocab)
-            shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
-            shift_labels = input_ids[:, 1:].contiguous().view(-1)
             pad_id = tok.pad_token_id if tok.pad_token_id is not None else 0
-            loss = F.cross_entropy(shift_logits, shift_labels, ignore_index=pad_id)
+
+            if args.class_weighted:
+                # Sample-level weighting: upweight underperforming classes per-item in batch
+                losses = []
+                for b in range(input_ids.size(0)):
+                    sl = logits[b, :-1, :].contiguous().view(-1, logits.size(-1))
+                    tl = input_ids[b, 1:].contiguous().view(-1)
+                    item_loss = F.cross_entropy(sl, tl, ignore_index=pad_id)
+                    w = CLASS_WEIGHTS.get(batch["label"][b], 1.0)
+                    losses.append(item_loss * w)
+                loss = torch.stack(losses).mean()
+            else:
+                shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+                shift_labels = input_ids[:, 1:].contiguous().view(-1)
+                loss = F.cross_entropy(shift_logits, shift_labels, ignore_index=pad_id)
 
             optimizer.zero_grad()
             loss.backward()
@@ -184,7 +212,9 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--lora_r", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=16)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--train_limit", type=int, default=None, help="Subsample N training examples (faster runs)")
+    parser.add_argument("--class_weighted", action="store_true", help="Apply per-sample class weights to boost rare/weak classes")
     parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging")
     args = parser.parse_args()
     train(args)

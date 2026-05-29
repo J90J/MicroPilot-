@@ -1,0 +1,23 @@
+# YOLO dataset: flat images/ + labels/ under this directory.
+# Index 1 is reserved for 15 MPH when merging speedPerce; speedlimit remap left it unused.
+path: /Users/jensjung/Desktop/final project EE/data/speed
+train: images
+val: images
+
+names:
+  - "10 MPH"
+  - "15 MPH"
+  - "20 MPH"
+  - "25 MPH"
+  - "30 MPH"
+  - "35 MPH"
+  - "40 MPH"
+  - "45 MPH"
+  - "50 MPH"
+  - "55 MPH"
+  - "60 MPH"
+  - "65 MPH"
+  - "70 MPH"
+  - "75 MPH"
+
+nc: 14

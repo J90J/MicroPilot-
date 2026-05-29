@@ -84,8 +84,11 @@ class MiniMindClassifier:
         vision_encoder, self.vision_processor = _load_vision_encoder(
             siglip_path, self.device, self.dtype
         )
-        object.__setattr__(self.model, "vision_encoder", vision_encoder)
-        object.__setattr__(self.model, "vision_processor", self.vision_processor)
+        # Attach to the underlying base model — PeftModel proxies most attrs but
+        # MiniMind's custom forward accesses vision_encoder on the raw model object.
+        base = self.model.base_model.model if hasattr(self.model, "base_model") else self.model
+        object.__setattr__(base, "vision_encoder", vision_encoder)
+        object.__setattr__(base, "vision_processor", self.vision_processor)
 
     def _build_input_ids(self) -> torch.Tensor:
         image_token = self.tokenizer.special_tokens_map.get("image_token", "<|image_pad|>")
