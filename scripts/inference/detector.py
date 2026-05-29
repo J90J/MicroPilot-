@@ -21,7 +21,7 @@ class YOLODetector:
         self,
         speed_model: str = "yolov8n.pt",   # custom-trained speed detector
         coco_model: str = "yolov8n.pt",    # COCO model for stop signs
-        conf_threshold: float = 0.30,
+        conf_threshold: float = 0.40,
     ):
         self.speed_model = YOLO(speed_model)
         # Only load a second model if it's different from the speed model

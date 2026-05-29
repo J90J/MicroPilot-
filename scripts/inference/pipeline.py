@@ -38,6 +38,7 @@ COLLECT_MIN_STREAK = 3   # consecutive intervals with same label = confident
 
 DISPLAY_MAX_WIDTH = 1280  # downscale wide frames for display
 ABSENT_INTERVALS_TO_RESET = 3  # intervals a label must be gone before re-announcing
+ANNOUNCE_MIN_STREAK = 3        # consecutive detections required before announcing
 BOX_COLOR = (0, 0, 255)   # red (BGR)
 BOX_THICKNESS = 3
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -108,21 +109,34 @@ class MicroPilotPipeline:
         # Rising-edge tracker: announce once when label first appears,
         # re-arm only after it has been absent for ABSENT_INTERVALS_TO_RESET intervals.
         self._active_labels: dict[str, int] = {}  # label → consecutive absent intervals
+        self._pending: dict[str, int] = {}         # label → consecutive seen intervals (pre-announce)
         # Active learning streak tracker: label → (streak_count, last_crop)
         self._streak: dict[str, list] = {}
         self._saved_hashes: set[str] = set()
 
     def _maybe_announce(self, label: str):
-        if label not in self._active_labels:
-            if label == "stop_sign":
-                speech = "stop"
-            elif label.startswith("speed_limit_"):
-                speech = label.replace("speed_limit_", "")
-            else:
-                speech = label.replace("_", " ")
-            _announce(speech)
-            print(f"  [ANNOUNCED] {label}")
-        self._active_labels[label] = 0  # reset absent counter
+        if label in self._active_labels:
+            # Already announced — just keep it alive
+            self._active_labels[label] = 0
+            self._pending.pop(label, None)
+            return
+
+        # Build up consecutive streak before announcing
+        self._pending[label] = self._pending.get(label, 0) + 1
+        if self._pending[label] < ANNOUNCE_MIN_STREAK:
+            return  # not confident yet
+
+        # Streak reached — announce
+        self._pending.pop(label, None)
+        self._active_labels[label] = 0
+        if label == "stop_sign":
+            speech = "stop"
+        elif label.startswith("speed_limit_"):
+            speech = label.replace("speed_limit_", "")
+        else:
+            speech = label.replace("_", " ")
+        _announce(speech)
+        print(f"  [ANNOUNCED] {label}")
 
     def _age_labels(self, seen: set[str]):
         """Age out labels not seen this interval; re-arm after enough absences."""
@@ -131,6 +145,10 @@ class MicroPilotPipeline:
                 self._active_labels[lbl] += 1
                 if self._active_labels[lbl] >= ABSENT_INTERVALS_TO_RESET:
                     del self._active_labels[lbl]
+        # Reset pending streak for anything not seen
+        for lbl in list(self._pending):
+            if lbl not in seen:
+                del self._pending[lbl]
 
     def _update_streak(self, label: str, crop: np.ndarray):
         """Track consecutive detections; save crop once streak reaches threshold."""
@@ -245,8 +263,10 @@ class MicroPilotPipeline:
                 labels = [d["label"] for d in detections]
                 print(f"[{elapsed:6.1f}s] frame {frame_idx:6d} → {labels or 'nothing detected'}")
 
-                if detections:
-                    last_detections = detections
+                # Only show boxes for confirmed labels (streak met + announced)
+                confirmed = [d for d in detections if d["label"] in self._active_labels]
+                if confirmed:
+                    last_detections = confirmed
                     stale_counter = 0
                 else:
                     stale_counter += 1
