@@ -38,7 +38,7 @@ COLLECT_MIN_STREAK = 3   # consecutive intervals with same label = confident
 
 DISPLAY_MAX_WIDTH = 1280  # downscale wide frames for display
 ABSENT_INTERVALS_TO_RESET = 3  # intervals a label must be gone before re-announcing
-ANNOUNCE_MIN_STREAK = 3        # consecutive detections required before announcing
+ANNOUNCE_MIN_STREAK = 2        # consecutive detections required before announcing
 BOX_COLOR = (0, 0, 255)   # red (BGR)
 BOX_THICKNESS = 3
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -303,7 +303,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_path", default="models/minimind-3o")
     parser.add_argument("--siglip_path", default="models/siglip2")
     parser.add_argument("--lora_path", default=None, help="Path to LoRA adapter")
-    parser.add_argument("--fps", type=float, default=1.0, help="Frames per second to classify")
+    parser.add_argument("--fps", type=float, default=3.0, help="Frames per second to classify")
     parser.add_argument("--quantize", action="store_true", help="INT8 dynamic quantization")
     parser.add_argument("--batch_size", type=int, default=4, help="ROI batch size")
     parser.add_argument("--yolo_model", default="yolov8n.pt", help="YOLO weights (default: COCO; use custom for speed sign detector)")
